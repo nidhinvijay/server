@@ -1,16 +1,27 @@
 /**
  * Trading Engine - Server-side Paper/Live Trade Management
  * 
- * Supports LONG and SHORT positions independently:
- * - BUY signal → Open LONG (if not already open)
- * - SELL signal → Open SHORT (if not already open)
+ * FSM Logic (Breakout Strategy):
  * 
- * Each position has its own paper trades, live trades, and PnL tracking.
+ * LONG (BUY signal):
+ *   - Sets threshold = stoppx
+ *   - State → NOPOSITION_SIGNAL (waiting)
+ *   - When LTP > threshold → Entry! State → BUYPOSITION
+ *   - While in position: LTP < threshold → Stop loss! State → NOPOSITION_BLOCKED
+ * 
+ * SHORT (SELL signal):
+ *   - Sets threshold = stoppx
+ *   - State → NOPOSITION_SIGNAL (waiting)
+ *   - When LTP < threshold → Entry! State → SELLPOSITION
+ *   - While in position: LTP > threshold → Stop loss! State → NOPOSITION_BLOCKED
+ * 
+ * BLOCKED:
+ *   - Wait 1 minute before allowing re-entry
  */
 
 const LIVE_WEBHOOK_URL = 'https://asia-south1-delta-6c4a8.cloudfunctions.net/tradingviewWebhook?token=tradingview';
 
-// Thresholds (updated per user request)
+// Thresholds for paper-to-live
 const OPEN_THRESHOLD = 0;   // Activate live when profit > $0
 const CLOSE_THRESHOLD = 0;  // Protective close when profit <= $0
 
@@ -20,16 +31,24 @@ class TradingEngine {
     
     // LONG position state
     this.longState = {
-      paperTrade: null,        // Current open paper trade
+      fsmState: 'NOPOSITION',      // NOPOSITION, NOPOSITION_SIGNAL, BUYPOSITION, NOPOSITION_BLOCKED
+      threshold: null,              // stoppx from signal
+      paperTrade: null,             // Current open paper trade
       liveState: this.createLiveState(),
-      signals: []
+      signals: [],
+      lastSignalAtMs: null,
+      lastBlockedAtMs: null
     };
     
     // SHORT position state
     this.shortState = {
-      paperTrade: null,        // Current open paper trade
+      fsmState: 'NOPOSITION',      // NOPOSITION, NOPOSITION_SIGNAL, SELLPOSITION, NOPOSITION_BLOCKED
+      threshold: null,              // stoppx from signal
+      paperTrade: null,             // Current open paper trade
       liveState: this.createLiveState(),
-      signals: []
+      signals: [],
+      lastSignalAtMs: null,
+      lastBlockedAtMs: null
     };
     
     // Shared
@@ -41,7 +60,7 @@ class TradingEngine {
       this.broadcastState();
     }, 1000);
     
-    console.log('[TradingEngine] Initialized with LONG/SHORT support');
+    console.log('[TradingEngine] Initialized with FSM Breakout Logic');
   }
 
   createLiveState() {
@@ -60,11 +79,15 @@ class TradingEngine {
   getFullState() {
     return {
       long: {
+        fsmState: this.longState.fsmState,
+        threshold: this.longState.threshold,
         paperTrade: this.longState.paperTrade,
         liveState: this.serializeLiveState(this.longState.liveState),
         signals: this.longState.signals.slice(0, 20)
       },
       short: {
+        fsmState: this.shortState.fsmState,
+        threshold: this.shortState.threshold,
         paperTrade: this.shortState.paperTrade,
         liveState: this.serializeLiveState(this.shortState.liveState),
         signals: this.shortState.signals.slice(0, 20)
@@ -91,32 +114,145 @@ class TradingEngine {
     this.io.emit('engine_state', this.getFullState());
   }
 
-  // --- PRICE UPDATES ---
+  // --- PRICE UPDATES (FSM Transitions) ---
   
   updateLtp(symbol, price) {
     this.ltpBySymbol.set(symbol, price);
+    const now = Date.now();
     
-    // Update LONG position
-    if (this.longState.paperTrade && this.longState.paperTrade.symbol === symbol) {
-      const trade = this.longState.paperTrade;
-      trade.currentPrice = price;
+    // Process LONG FSM transitions
+    this.processLongTickTransition(symbol, price, now);
+    
+    // Process SHORT FSM transitions
+    this.processShortTickTransition(symbol, price, now);
+  }
+
+  processLongTickTransition(symbol, ltp, now) {
+    const state = this.longState;
+    
+    // Update existing position PnL
+    if (state.paperTrade && state.paperTrade.symbol === symbol) {
+      state.paperTrade.currentPrice = ltp;
       // LONG: profit when price goes UP
-      trade.unrealizedPnl = (price - trade.entryPrice) * trade.quantity;
+      state.paperTrade.unrealizedPnl = (ltp - state.paperTrade.entryPrice) * state.paperTrade.quantity;
       
-      const totalPnl = this.longState.liveState.cumulativePnl + trade.unrealizedPnl;
-      this.checkLiveTrade('LONG', this.longState, totalPnl, price, symbol);
+      const totalPnl = state.liveState.cumulativePnl + state.paperTrade.unrealizedPnl;
+      this.checkLiveTrade('LONG', state, totalPnl, ltp, symbol);
     }
     
-    // Update SHORT position
-    if (this.shortState.paperTrade && this.shortState.paperTrade.symbol === symbol) {
-      const trade = this.shortState.paperTrade;
-      trade.currentPrice = price;
-      // SHORT: profit when price goes DOWN
-      trade.unrealizedPnl = (trade.entryPrice - price) * trade.quantity;
-      
-      const totalPnl = this.shortState.liveState.cumulativePnl + trade.unrealizedPnl;
-      this.checkLiveTrade('SHORT', this.shortState, totalPnl, price, symbol);
+    if (state.threshold === null) return;
+    
+    // FSM State transitions based on tick
+    switch (state.fsmState) {
+      case 'NOPOSITION_SIGNAL':
+        // LONG: Enter when LTP breaks ABOVE threshold
+        if (ltp > state.threshold) {
+          console.log(`[TradingEngine] 📈 LONG ENTRY: LTP ${ltp} > threshold ${state.threshold}`);
+          state.fsmState = 'BUYPOSITION';
+          this.openPaperTrade('LONG', state, symbol, ltp);
+        } else {
+          console.log(`[TradingEngine] 🔒 LONG BLOCKED: LTP ${ltp} <= threshold ${state.threshold}`);
+          state.fsmState = 'NOPOSITION_BLOCKED';
+          state.lastBlockedAtMs = now;
+        }
+        break;
+        
+      case 'BUYPOSITION':
+        // LONG: Stop loss when LTP drops BELOW threshold
+        if (ltp < state.threshold) {
+          console.log(`[TradingEngine] 🛑 LONG STOP LOSS: LTP ${ltp} < threshold ${state.threshold}`);
+          this.closePaperTrade('LONG', state, ltp, 'Stop Loss');
+          state.fsmState = 'NOPOSITION_BLOCKED';
+          state.lastBlockedAtMs = now;
+        }
+        break;
+        
+      case 'NOPOSITION_BLOCKED':
+        // Check if 1-minute lock expired
+        if (state.lastBlockedAtMs && this.isFirstSecondNextMinute(state.lastBlockedAtMs, now)) {
+          console.log(`[TradingEngine] 🔓 LONG UNBLOCKED after 1 minute`);
+          // Re-check entry condition
+          if (ltp > state.threshold) {
+            console.log(`[TradingEngine] 📈 LONG RE-ENTRY: LTP ${ltp} > threshold ${state.threshold}`);
+            state.fsmState = 'BUYPOSITION';
+            this.openPaperTrade('LONG', state, symbol, ltp);
+          } else {
+            // Stay blocked, reset timer
+            state.lastBlockedAtMs = now;
+          }
+        }
+        break;
     }
+    
+    // Update FSM display
+    this.fsmBySymbol.set(symbol + '_LONG', {
+      state: state.fsmState,
+      threshold: state.threshold
+    });
+  }
+
+  processShortTickTransition(symbol, ltp, now) {
+    const state = this.shortState;
+    
+    // Update existing position PnL
+    if (state.paperTrade && state.paperTrade.symbol === symbol) {
+      state.paperTrade.currentPrice = ltp;
+      // SHORT: profit when price goes DOWN
+      state.paperTrade.unrealizedPnl = (state.paperTrade.entryPrice - ltp) * state.paperTrade.quantity;
+      
+      const totalPnl = state.liveState.cumulativePnl + state.paperTrade.unrealizedPnl;
+      this.checkLiveTrade('SHORT', state, totalPnl, ltp, symbol);
+    }
+    
+    if (state.threshold === null) return;
+    
+    // FSM State transitions based on tick
+    switch (state.fsmState) {
+      case 'NOPOSITION_SIGNAL':
+        // SHORT: Enter when LTP breaks BELOW threshold
+        if (ltp < state.threshold) {
+          console.log(`[TradingEngine] 📉 SHORT ENTRY: LTP ${ltp} < threshold ${state.threshold}`);
+          state.fsmState = 'SELLPOSITION';
+          this.openPaperTrade('SHORT', state, symbol, ltp);
+        } else {
+          console.log(`[TradingEngine] 🔒 SHORT BLOCKED: LTP ${ltp} >= threshold ${state.threshold}`);
+          state.fsmState = 'NOPOSITION_BLOCKED';
+          state.lastBlockedAtMs = now;
+        }
+        break;
+        
+      case 'SELLPOSITION':
+        // SHORT: Stop loss when LTP rises ABOVE threshold
+        if (ltp > state.threshold) {
+          console.log(`[TradingEngine] 🛑 SHORT STOP LOSS: LTP ${ltp} > threshold ${state.threshold}`);
+          this.closePaperTrade('SHORT', state, ltp, 'Stop Loss');
+          state.fsmState = 'NOPOSITION_BLOCKED';
+          state.lastBlockedAtMs = now;
+        }
+        break;
+        
+      case 'NOPOSITION_BLOCKED':
+        // Check if 1-minute lock expired
+        if (state.lastBlockedAtMs && this.isFirstSecondNextMinute(state.lastBlockedAtMs, now)) {
+          console.log(`[TradingEngine] 🔓 SHORT UNBLOCKED after 1 minute`);
+          // Re-check entry condition
+          if (ltp < state.threshold) {
+            console.log(`[TradingEngine] 📉 SHORT RE-ENTRY: LTP ${ltp} < threshold ${state.threshold}`);
+            state.fsmState = 'SELLPOSITION';
+            this.openPaperTrade('SHORT', state, symbol, ltp);
+          } else {
+            // Stay blocked, reset timer
+            state.lastBlockedAtMs = now;
+          }
+        }
+        break;
+    }
+    
+    // Update FSM display
+    this.fsmBySymbol.set(symbol + '_SHORT', {
+      state: state.fsmState,
+      threshold: state.threshold
+    });
   }
 
   // --- WEBHOOK SIGNAL PROCESSING ---
@@ -127,7 +263,7 @@ class TradingEngine {
     
     const normalizedSymbol = symbol.toUpperCase();
     const ltp = this.ltpBySymbol.get(normalizedSymbol);
-    const entryPrice = ltp || stoppx;
+    const now = Date.now();
     
     // Determine direction from side or intent
     const isBuy = side === 'BUY' || intent === 'ENTRY';
@@ -138,41 +274,53 @@ class TradingEngine {
       intent: isBuy ? 'BUY' : 'SELL',
       stoppx,
       ltp: ltp || null,
-      receivedAt: Date.now()
+      receivedAt: now
     };
     
     if (isBuy) {
-      // BUY = Open LONG (if not already open)
+      // BUY signal → Set threshold and wait for breakout
       this.longState.signals.unshift(signalRecord);
       this.longState.signals = this.longState.signals.slice(0, 50);
       
-      if (!this.longState.paperTrade) {
-        this.openPaperTrade('LONG', this.longState, normalizedSymbol, entryPrice);
-      } else {
-        console.log(`[TradingEngine] LONG already open, ignoring BUY signal`);
+      // Set threshold from stoppx (or LTP if no stoppx)
+      this.longState.threshold = stoppx || ltp;
+      this.longState.lastSignalAtMs = now;
+      
+      if (this.longState.fsmState === 'NOPOSITION' || this.longState.fsmState === 'NOPOSITION_BLOCKED') {
+        this.longState.fsmState = 'NOPOSITION_SIGNAL';
+        console.log(`[TradingEngine] 📶 LONG Signal received: threshold=${this.longState.threshold}, waiting for LTP > threshold`);
+      } else if (this.longState.fsmState === 'BUYPOSITION') {
+        // Already in position, update threshold (trailing stop)
+        console.log(`[TradingEngine] 📶 LONG already in position, updating threshold to ${this.longState.threshold}`);
       }
+      
     } else if (isSell) {
-      // SELL = Open SHORT (if not already open)
+      // SELL signal → Set threshold and wait for breakdown
       this.shortState.signals.unshift(signalRecord);
       this.shortState.signals = this.shortState.signals.slice(0, 50);
       
-      if (!this.shortState.paperTrade) {
-        this.openPaperTrade('SHORT', this.shortState, normalizedSymbol, entryPrice);
-      } else {
-        console.log(`[TradingEngine] SHORT already open, ignoring SELL signal`);
+      // Set threshold from stoppx (or LTP if no stoppx)
+      this.shortState.threshold = stoppx || ltp;
+      this.shortState.lastSignalAtMs = now;
+      
+      if (this.shortState.fsmState === 'NOPOSITION' || this.shortState.fsmState === 'NOPOSITION_BLOCKED') {
+        this.shortState.fsmState = 'NOPOSITION_SIGNAL';
+        console.log(`[TradingEngine] 📶 SHORT Signal received: threshold=${this.shortState.threshold}, waiting for LTP < threshold`);
+      } else if (this.shortState.fsmState === 'SELLPOSITION') {
+        // Already in position, update threshold (trailing stop)
+        console.log(`[TradingEngine] 📶 SHORT already in position, updating threshold to ${this.shortState.threshold}`);
       }
     }
-    
-    // Update FSM
-    this.fsmBySymbol.set(normalizedSymbol, {
-      state: isBuy ? 'BUYPOSITION' : 'SELLPOSITION',
-      threshold: stoppx
-    });
     
     this.broadcastState();
   }
 
   openPaperTrade(direction, state, symbol, entryPrice) {
+    if (state.paperTrade) {
+      console.log(`[TradingEngine] ${direction} paper trade already open, skipping`);
+      return;
+    }
+    
     const trade = {
       id: `paper-${direction}-${symbol}-${Date.now()}`,
       timeIst: this.formatIstTime(new Date()),
@@ -180,20 +328,47 @@ class TradingEngine {
       direction,
       entryPrice,
       currentPrice: entryPrice,
-      quantity: 2,
-      unrealizedPnl: 0
+      quantity: 2,  // Default quantity
+      unrealizedPnl: 0,
+      enteredAt: Date.now()
     };
     
     state.paperTrade = trade;
-    console.log(`[TradingEngine] � ${direction} Paper ENTRY: ${symbol} @ ${entryPrice}`);
     
-    // Store pending for live activation
-    state.liveState.pendingPaperTrade = { 
-      entryPrice, 
-      quantity: 2, 
+    // Set pending for live trade activation
+    state.liveState.pendingPaperTrade = {
+      entryPrice,
+      quantity: trade.quantity,
       lot: 1,
-      direction 
+      openedAt: Date.now()
     };
+    
+    console.log(`[TradingEngine] 📈 ${direction} Paper ENTRY: ${symbol} @ ${entryPrice}`);
+  }
+
+  closePaperTrade(direction, state, exitPrice, reason) {
+    if (!state.paperTrade) return;
+    
+    const trade = state.paperTrade;
+    let realizedPnl;
+    
+    if (direction === 'LONG') {
+      realizedPnl = (exitPrice - trade.entryPrice) * trade.quantity;
+    } else {
+      realizedPnl = (trade.entryPrice - exitPrice) * trade.quantity;
+    }
+    
+    state.liveState.cumulativePnl += realizedPnl;
+    
+    console.log(`[TradingEngine] 📉 ${direction} Paper EXIT (${reason}): ${trade.symbol} @ ${exitPrice}, PnL: $${realizedPnl.toFixed(2)}`);
+    
+    // Close live trade if open
+    if (state.liveState.openTrade) {
+      this.closeLiveTrade(direction, state, exitPrice, reason);
+    }
+    
+    state.paperTrade = null;
+    state.liveState.pendingPaperTrade = null;
   }
 
   // --- LIVE TRADE MANAGEMENT ---
@@ -201,16 +376,16 @@ class TradingEngine {
   checkLiveTrade(direction, state, totalPnl, currentPrice, symbol) {
     const liveState = state.liveState;
     
-    // Check if block expired
+    // Check if block expired (1-minute lock)
     if (liveState.blockedAtMs && this.isFirstSecondNextMinute(liveState.blockedAtMs, Date.now())) {
       liveState.blockedAtMs = null;
-      console.log(`[TradingEngine] 🔓 ${direction} Block expired`);
+      console.log(`[TradingEngine] 🔓 ${direction} Live Block expired`);
     }
     
     // Protective close: when PnL drops to <= 0
     if (liveState.state === 'POSITION' && liveState.openTrade && totalPnl <= CLOSE_THRESHOLD) {
       console.log(`[TradingEngine] 🛡️ ${direction} Protective close: PnL ${totalPnl.toFixed(2)} <= ${CLOSE_THRESHOLD}`);
-      this.closeLiveTrade(direction, state, currentPrice, 'Protective', symbol);
+      this.closeLiveTrade(direction, state, currentPrice, 'Protective');
       liveState.blockedAtMs = Date.now();
     }
     
@@ -230,113 +405,113 @@ class TradingEngine {
     }
   }
 
-  async openLiveTrade(direction, state, entryPrice, symbol) {
+  openLiveTrade(direction, state, entryPrice, symbol) {
     const liveState = state.liveState;
+    const pending = liveState.pendingPaperTrade;
+    if (!pending) return;
     
-    const trade = {
-      id: `live-${direction}-${symbol}-${Date.now()}`,
-      timeIst: this.formatIstTime(new Date()),
+    const id = `live-${direction}-${symbol}-${Date.now()}`;
+    const timeIst = this.formatIstTime(new Date());
+    
+    liveState.openTrade = {
+      id,
       symbol,
-      direction,
+      entryPrice,
+      quantity: pending.quantity,
+      lot: pending.lot,
+      timeIst
+    };
+    liveState.state = 'POSITION';
+    
+    const tradeRow = {
+      id,
+      timeIst,
+      symbol,
       action: 'ENTRY',
       entryPrice,
       exitPrice: null,
-      quantity: 2,
-      lot: 1,
+      quantity: pending.quantity,
       realizedPnl: null,
       cumulativePnl: liveState.cumulativePnl
     };
     
-    liveState.openTrade = trade;
-    liveState.state = 'POSITION';
-    liveState.trades.unshift({ ...trade });
+    liveState.trades = [tradeRow, ...liveState.trades].slice(0, 50);
     
-    console.log(`[TradingEngine] ✅ ${direction} LIVE ENTRY: ${symbol} @ ${entryPrice}`);
-    
-    // Send to external webhook
-    const signalType = direction === 'LONG' ? 'ENTRY' : 'SHORT_ENTRY';
-    await this.sendLiveSignal(signalType, symbol, entryPrice);
-    this.broadcastState();
+    console.log(`[TradingEngine] ✅ ${direction} LIVE TRADE OPENED: ${symbol} @ ${entryPrice}`);
+    this.sendLiveSignal('ENTRY', symbol, entryPrice, direction);
   }
 
-  async closeLiveTrade(direction, state, exitPrice, reason, symbol) {
+  closeLiveTrade(direction, state, exitPrice, reason) {
     const liveState = state.liveState;
     if (!liveState.openTrade) return;
     
+    const openTrade = liveState.openTrade;
     let realizedPnl;
+    
     if (direction === 'LONG') {
-      realizedPnl = (exitPrice - liveState.openTrade.entryPrice) * liveState.openTrade.quantity * liveState.openTrade.lot;
+      realizedPnl = (exitPrice - openTrade.entryPrice) * openTrade.quantity * openTrade.lot;
     } else {
-      realizedPnl = (liveState.openTrade.entryPrice - exitPrice) * liveState.openTrade.quantity * liveState.openTrade.lot;
+      realizedPnl = (openTrade.entryPrice - exitPrice) * openTrade.quantity * openTrade.lot;
     }
     
     liveState.cumulativePnl += realizedPnl;
     
-    const exitTrade = {
-      id: `${liveState.openTrade.id}-exit`,
+    const exitRow = {
+      id: `${openTrade.id}-exit`,
       timeIst: this.formatIstTime(new Date()),
-      symbol,
-      direction,
+      symbol: openTrade.symbol,
       action: 'EXIT',
-      entryPrice: liveState.openTrade.entryPrice,
+      entryPrice: openTrade.entryPrice,
       exitPrice,
-      quantity: liveState.openTrade.quantity,
+      quantity: openTrade.quantity,
       realizedPnl,
       cumulativePnl: liveState.cumulativePnl
     };
     
-    liveState.trades.unshift(exitTrade);
+    liveState.trades = [exitRow, ...liveState.trades].slice(0, 50);
     liveState.openTrade = null;
     liveState.state = 'NO_POSITION';
     liveState.unrealizedPnl = 0;
     
-    console.log(`[TradingEngine] ✅ ${direction} LIVE EXIT (${reason}): ${symbol} @ ${exitPrice}, PnL: $${realizedPnl.toFixed(2)}`);
-    
-    const signalType = direction === 'LONG' ? 'EXIT' : 'SHORT_EXIT';
-    await this.sendLiveSignal(signalType, symbol, exitPrice);
-    this.broadcastState();
+    console.log(`[TradingEngine] ✅ ${direction} LIVE TRADE CLOSED (${reason}): ${openTrade.symbol} @ ${exitPrice}, PnL: $${realizedPnl.toFixed(2)}`);
+    this.sendLiveSignal('EXIT', openTrade.symbol, exitPrice, direction);
   }
 
-  async sendLiveSignal(kind, symbol, refPrice) {
-    const mappedSymbol = symbol === 'BTCUSDT' ? 'BTCUSD' : symbol;
-    
-    const message = kind.includes('ENTRY')
-      ? `Accepted Entry + priorRisePct= 0.00 | stopPx=${refPrice} | sym=${mappedSymbol}`
-      : `Accepted Exit + priorRisePct= 0.00 | stopPx=${refPrice} | sym=${mappedSymbol}`;
-    
+  async sendLiveSignal(kind, symbol, refPrice, direction) {
     try {
+      // Map symbol if needed
+      let deltaSymbol = symbol;
+      if (symbol === 'BTCUSDT') {
+        deltaSymbol = 'BTCUSD';
+      }
+      
+      const message = kind === 'ENTRY'
+        ? `Accepted Entry + priorRisePct= 0.00 | stopPx=${refPrice} | sym=${deltaSymbol}`
+        : `Accepted Exit + priorRisePct= 0.00 | stopPx=${refPrice} | sym=${deltaSymbol}`;
+      
+      console.log(`[TradingEngine] 🚀 Sending ${direction} ${kind} to Firebase: ${deltaSymbol} @ ${refPrice}`);
+      
       const response = await fetch(LIVE_WEBHOOK_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message })
       });
+      
       const result = await response.text();
-      console.log(`[TradingEngine] 📡 Live signal sent: ${kind} ${mappedSymbol} @ ${refPrice}`);
+      console.log(`[TradingEngine] ✅ Firebase response:`, result);
     } catch (err) {
       console.error(`[TradingEngine] ❌ Failed to send live signal:`, err.message);
     }
   }
 
-  // --- HELPERS ---
+  // --- UTILITY FUNCTIONS ---
   
-  isFirstSecondNextMinute(blockedAtMs, nowMs) {
-    const blockedMinute = Math.floor(blockedAtMs / 60000);
-    const currentMinute = Math.floor(nowMs / 60000);
-    const currentSecond = Math.floor((nowMs % 60000) / 1000);
-    return currentMinute > blockedMinute && currentSecond < 2;
+  isFirstSecondNextMinute(anchorAtMs, tickAtMs) {
+    return Math.floor(tickAtMs / 60000) > Math.floor(anchorAtMs / 60000);
   }
 
   formatIstTime(date) {
-    return date.toLocaleString('en-IN', {
-      timeZone: 'Asia/Kolkata',
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: false
-    });
+    return date.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
   }
 }
 
