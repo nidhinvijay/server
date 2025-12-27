@@ -104,7 +104,12 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 
 function normalizeWebhookPayload(req) {
+  // Handle JSON body with a 'message' field (TradingView format)
   if (req.body && typeof req.body === "object") {
+    if (req.body.message && typeof req.body.message === "string") {
+      // Parse the message string
+      return parseMessageString(req.body.message);
+    }
     return req.body;
   }
 
@@ -115,32 +120,43 @@ function normalizeWebhookPayload(req) {
     }
 
     try {
-      return JSON.parse(trimmed);
-    } catch (err) {
-      const parsed = {};
-      const [prefix, rest] = trimmed.split("+").map((part) => part.trim());
-      if (prefix) {
-        parsed.action = prefix.replace(/^Accepted\s+/i, "").trim();
-      }
-
-      const kvSource = rest || trimmed;
-      const kvPairs = kvSource.split(/[|,\n]/);
-      for (const pair of kvPairs) {
-        const idx = pair.indexOf("=");
-        if (idx === -1) {
-          continue;
-        }
-        const key = pair.slice(0, idx).trim();
-        const value = pair.slice(idx + 1).trim();
-        if (key) {
-          parsed[key] = value;
-        }
+      const parsed = JSON.parse(trimmed);
+      // Check if parsed JSON has message field
+      if (parsed.message && typeof parsed.message === "string") {
+        return parseMessageString(parsed.message);
       }
       return parsed;
+    } catch (err) {
+      return parseMessageString(trimmed);
     }
   }
 
   return {};
+}
+
+function parseMessageString(message) {
+  const parsed = {};
+  const trimmed = message.trim();
+  
+  const [prefix, rest] = trimmed.split("+").map((part) => part.trim());
+  if (prefix) {
+    parsed.action = prefix.replace(/^Accepted\s+/i, "").trim();
+  }
+
+  const kvSource = rest || trimmed;
+  const kvPairs = kvSource.split(/[|,\n]/);
+  for (const pair of kvPairs) {
+    const idx = pair.indexOf("=");
+    if (idx === -1) {
+      continue;
+    }
+    const key = pair.slice(0, idx).trim();
+    const value = pair.slice(idx + 1).trim();
+    if (key) {
+      parsed[key] = value;
+    }
+  }
+  return parsed;
 }
 
 function extractTradeSignal(payload) {
