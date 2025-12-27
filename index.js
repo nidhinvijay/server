@@ -36,37 +36,43 @@ function loadEnv(envPath = path.resolve(process.cwd(), ".env")) {
 
 loadEnv();
 
-const apiKey = process.env.KITE_API_KEY;
-const accessToken = process.env.KITE_ACCESS_TOKEN;
-const instrumentsRaw = process.env.INSTRUMENTS_DATA;
+// Mutable state for hot-reload
+let currentApiKey = process.env.KITE_API_KEY;
+let currentAccessToken = process.env.KITE_ACCESS_TOKEN;
+let instrumentsRaw = process.env.INSTRUMENTS_DATA;
+let currentInstruments = [];
+let currentTokens = [];
+let ticker = null;
 
-if (!apiKey || !accessToken || !instrumentsRaw) {
+function parseInstruments(raw) {
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed) || parsed.length === 0) {
+      throw new Error('INSTRUMENTS_DATA must be a non-empty JSON array');
+    }
+    const tokens = parsed.map(i => i.token).filter(t => Number.isFinite(t));
+    if (tokens.length === 0) {
+      throw new Error('No valid numeric tokens found');
+    }
+    return { instruments: parsed, tokens };
+  } catch (err) {
+    console.error('Failed to parse instruments:', err.message);
+    return null;
+  }
+}
+
+// Initial parse
+if (!currentApiKey || !currentAccessToken || !instrumentsRaw) {
   console.error("Missing KITE_API_KEY, KITE_ACCESS_TOKEN, or INSTRUMENTS_DATA in .env");
   process.exit(1);
 }
 
-let instruments;
-try {
-  instruments = JSON.parse(instrumentsRaw);
-} catch (err) {
-  console.error("INSTRUMENTS_DATA must be valid JSON. Run: node scripts/rewrite-env.js");
-  console.error(err.message);
+const initialParse = parseInstruments(instrumentsRaw);
+if (!initialParse) {
   process.exit(1);
 }
-
-if (!Array.isArray(instruments) || instruments.length === 0) {
-  console.error("INSTRUMENTS_DATA must be a non-empty JSON array");
-  process.exit(1);
-}
-
-const tokens = instruments
-  .map((instrument) => instrument.token)
-  .filter((token) => Number.isFinite(token));
-
-if (tokens.length === 0) {
-  console.error("No valid numeric tokens found in INSTRUMENTS_DATA");
-  process.exit(1);
-}
+currentInstruments = initialParse.instruments;
+currentTokens = initialParse.tokens;
 
 const port = process.env.SOCKET_PORT
   ? Number(process.env.SOCKET_PORT)
@@ -287,44 +293,68 @@ app.get('/zerodha/callback', async (req, res) => {
       accessToken,
     });
 
+    // Update in memory (no restart needed!)
+    currentAccessToken = accessToken;
+    process.env.KITE_ACCESS_TOKEN = accessToken;
+    
+    // Hot-reload Kite ticker
+    reconnectKiteTicker();
+    
     const html = `<!doctype html>
 <html><head><meta charset="utf-8"><title>Zerodha Session</title></head>
 <body style="font-family: Arial, sans-serif; margin: 20px;">
-  <h2>Zerodha session updated</h2>
+  <h2>✅ Zerodha session updated (HOT RELOAD)</h2>
   <p><b>Env path:</b> <code>${envPath}</code></p>
-  <p><b>Action:</b> Server restarting in 1 second...</p>
-  <p style="font-size: 12px; color: #555;">
-    Access token written successfully. You can close this tab.
+  <p><b>Status:</b> Token updated in memory, Kite ticker reconnecting...</p>
+  <p style="font-size: 12px; color: green;">
+    🚀 No server restart needed! BTC trading continues uninterrupted.
   </p>
 </body></html>`;
     
-    // Send response FIRST
     res.status(200).send(html);
-
-    // Restart process AFTER response is sent (1s delay)
-    const pmId = process.env.pm_id; // PM2 automatically sets this
-    const pm2Name = process.env.ZERODHA_PM2_NAME ?? 'simplelogic-backend'; 
-    const doRestart = process.env.ZERODHA_PM2_RESTART !== '0';
-
-    if (doRestart) {
-      setTimeout(() => {
-        try {
-          console.log('🔄 Triggering Self-Restart...');
-          if (pmId) {
-            execSync(`pm2 restart ${pmId}`, { stdio: 'ignore' });
-          } else {
-            execSync(`pm2 restart ${pm2Name}`, { stdio: 'ignore' });
-          }
-        } catch (e) {
-          console.error('Restart failed:', e.message);
-        }
-      }, 1000);
-    }
-    
     return;
   } catch (e) {
     return res.status(500).send(`Failed to generate session: ${String(e)}`);
   }
+});
+
+// POST /update-instruments - Hot reload instruments without restart
+app.post('/update-instruments', (req, res) => {
+  const { instruments } = req.body;
+  
+  if (!instruments || !Array.isArray(instruments)) {
+    return res.status(400).json({ error: 'instruments must be an array' });
+  }
+  
+  const tokens = instruments.map(i => i.token).filter(t => Number.isFinite(t));
+  if (tokens.length === 0) {
+    return res.status(400).json({ error: 'No valid tokens in instruments' });
+  }
+  
+  // Update in memory
+  currentInstruments = instruments;
+  currentTokens = tokens;
+  
+  // Update .env file
+  const envPath = path.resolve(process.cwd(), '.env');
+  const instrumentsJson = JSON.stringify(instruments);
+  const lines = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf8').split(/\r?\n/) : [];
+  let found = false;
+  const newLines = lines.map(line => {
+    if (line.startsWith('INSTRUMENTS_DATA=')) {
+      found = true;
+      return `INSTRUMENTS_DATA=${instrumentsJson}`;
+    }
+    return line;
+  });
+  if (!found) newLines.push(`INSTRUMENTS_DATA=${instrumentsJson}`);
+  fs.writeFileSync(envPath, newLines.join('\n'));
+  
+  // Hot-reload Kite ticker
+  reconnectKiteTicker();
+  
+  console.log(`[Hot Reload] 📋 Instruments updated: ${tokens.length} tokens`);
+  res.json({ ok: true, tokensCount: tokens.length });
 });
 
 
@@ -382,10 +412,59 @@ startBinanceWs({ io, tradingEngine });
 startDeltaWs({ io });
 startDeltaRestPolling({ io });
 
-const ticker = new KiteTicker({
-  api_key: apiKey,
-  access_token: accessToken,
-});
+// Create initial Kite ticker
+function createKiteTicker() {
+  const newTicker = new KiteTicker({
+    api_key: currentApiKey,
+    access_token: currentAccessToken,
+  });
+  
+  newTicker.on('connect', () => {
+    console.log('[KiteTicker] Connected, subscribing to', currentTokens.length, 'tokens');
+    newTicker.subscribe(currentTokens);
+    newTicker.setMode(newTicker.modeFull, currentTokens);
+  });
+  
+  newTicker.on('ticks', (ticks) => {
+    if (!firstTickLogged && Array.isArray(ticks) && ticks.length > 0) {
+      const first = ticks[0];
+      console.log(`Zerodha connected - First tick: token=${first.instrument_token} LTP=${first.last_price}`);
+      firstTickCache = first;
+      io.emit('firstTick', firstTickCache);
+      firstTickLogged = true;
+    }
+    io.emit('ticks', ticks);
+    
+    // Feed to trading engine
+    if (tradingEngine && Array.isArray(ticks)) {
+      for (const tick of ticks) {
+        const tokenSymbol = `TOKEN-${tick.instrument_token}`;
+        tradingEngine.updateLtp(tokenSymbol, tick.last_price);
+      }
+    }
+  });
+  
+  newTicker.on('error', (err) => console.error('KiteTicker error:', err));
+  newTicker.on('close', () => console.log('KiteTicker closed'));
+  newTicker.on('reconnect', (n) => console.log('KiteTicker reconnect:', n));
+  newTicker.on('noreconnect', () => console.log('KiteTicker noreconnect'));
+  
+  return newTicker;
+}
+
+// Hot-reload function
+function reconnectKiteTicker() {
+  console.log('[Hot Reload] 🔄 Reconnecting Kite ticker...');
+  if (ticker && ticker.connected()) {
+    ticker.disconnect();
+  }
+  firstTickLogged = false; // Reset for new connection
+  ticker = createKiteTicker();
+  // Don't auto-connect, let market hours check handle it
+  checkMarketHoursAndConnect();
+}
+
+ticker = createKiteTicker();
 
 let firstTickLogged = false;
 let firstTickCache = null;
@@ -404,48 +483,7 @@ io.on("connection", (socket) => {
   socket.emit("engine_state", tradingEngine.getFullState());
 });
 
-ticker.on("connect", () => {
-  ticker.subscribe(tokens);
-  ticker.setMode(ticker.modeFull, tokens);
-});
 
-ticker.on("ticks", (ticks) => {
-  if (!firstTickLogged && Array.isArray(ticks) && ticks.length > 0) {
-    const first = ticks[0];
-    console.log(`Zerodha connected - First tick: token=${first.instrument_token} LTP=${first.last_price}`);
-    firstTickCache = first;
-    io.emit("firstTick", firstTickCache);
-    firstTickLogged = true;
-  }
-
-  // Emit to clients
-  io.emit("ticks", ticks);
-  
-  // Feed to trading engine for Options PnL calculations
-  if (tradingEngine && Array.isArray(ticks)) {
-    for (const tick of ticks) {
-      // Use token as identifier for Zerodha instruments
-      const tokenSymbol = `TOKEN-${tick.instrument_token}`;
-      tradingEngine.updateLtp(tokenSymbol, tick.last_price);
-    }
-  }
-});
-
-ticker.on("error", (err) => {
-  console.error("KiteTicker error:", err);
-});
-
-ticker.on("close", () => {
-  console.log("KiteTicker closed");
-});
-
-ticker.on("reconnect", (reconnectAttempt) => {
-  console.log("KiteTicker reconnect:", reconnectAttempt);
-});
-
-ticker.on("noreconnect", () => {
-  console.log("KiteTicker noreconnect");
-});
 
 // Market Hours Scheduler (09:00 - 15:40 IST)
 function checkMarketHoursAndConnect() {
