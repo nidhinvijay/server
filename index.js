@@ -93,6 +93,10 @@ app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: false }));
 app.use(express.text({ type: "text/plain" }));
 
+// Serve Angular static files from /public folder
+app.use(express.static(path.join(__dirname, 'public')));
+
+
 function normalizeWebhookPayload(req) {
   if (req.body && typeof req.body === "object") {
     return req.body;
@@ -484,6 +488,16 @@ checkMarketHoursAndConnect();
 
 // Check every 1 minute
 setInterval(checkMarketHoursAndConnect, 60000);
+
+// SPA catch-all: Serve index.html for Angular routes
+app.get('*', (req, res) => {
+  const indexPath = path.join(__dirname, 'public', 'index.html');
+  if (fs.existsSync(indexPath)) {
+    res.sendFile(indexPath);
+  } else {
+    res.status(404).send('Angular app not found. Copy dist files to /public folder.');
+  }
+});
 
 server.listen(port, () => {
   console.log(`Socket.IO server listening on port ${port}`);
