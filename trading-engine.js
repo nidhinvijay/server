@@ -91,7 +91,7 @@ class TradingEngine {
   performDailyReset() {
     console.log('[TradingEngine] 🔄 Daily reset at 5:30 AM IST');
     
-    // Close any open positions first
+    // Close any open positions first (this saves to history before clearing)
     if (this.longState.paperTrade) {
       const ltp = this.ltpBySymbol.get(this.longState.paperTrade.symbol) || this.longState.paperTrade.currentPrice;
       this.closePaperTrade('LONG', this.longState, ltp, 'Daily Reset');
@@ -101,30 +101,38 @@ class TradingEngine {
       this.closePaperTrade('SHORT', this.shortState, ltp, 'Daily Reset');
     }
     
-    // Reset LONG
+    // Reset LONG - keep history, reset active state and PnL
     this.longState.fsmState = 'NOPOSITION';
     this.longState.threshold = null;
-    this.longState.paperTrades = [];
-    this.longState.peakPnlHistory = [];
     this.longState.currentPeakPnl = null;
-    this.longState.signals = [];
-    this.longState.liveState = this.createLiveState();
+    this.longState.signals = [];  // Reset signals for new day
+    this.longState.liveState.state = 'NO_POSITION';
+    this.longState.liveState.cumulativePnl = 0;  // Reset PnL
+    this.longState.liveState.unrealizedPnl = 0;
+    this.longState.liveState.blockedAtMs = null;
+    this.longState.liveState.openTrade = null;
+    this.longState.liveState.pendingPaperTrade = null;
+    // Keep: paperTrades, peakPnlHistory, liveState.trades
     this.longState.lastSignalAtMs = null;
     this.longState.lastBlockedAtMs = null;
     
-    // Reset SHORT
+    // Reset SHORT - keep history, reset active state and PnL
     this.shortState.fsmState = 'NOPOSITION';
     this.shortState.threshold = null;
-    this.shortState.paperTrades = [];
-    this.shortState.peakPnlHistory = [];
     this.shortState.currentPeakPnl = null;
-    this.shortState.signals = [];
-    this.shortState.liveState = this.createLiveState();
+    this.shortState.signals = [];  // Reset signals for new day
+    this.shortState.liveState.state = 'NO_POSITION';
+    this.shortState.liveState.cumulativePnl = 0;  // Reset PnL
+    this.shortState.liveState.unrealizedPnl = 0;
+    this.shortState.liveState.blockedAtMs = null;
+    this.shortState.liveState.openTrade = null;
+    this.shortState.liveState.pendingPaperTrade = null;
+    // Keep: paperTrades, peakPnlHistory, liveState.trades
     this.shortState.lastSignalAtMs = null;
     this.shortState.lastBlockedAtMs = null;
     
     this.fsmBySymbol.clear();
-    console.log('[TradingEngine] ✅ Daily reset complete');
+    console.log('[TradingEngine] ✅ Daily reset complete - History preserved');
   }
 
   createLiveState() {
