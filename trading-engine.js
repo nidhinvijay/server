@@ -148,6 +148,24 @@ class TradingEngine {
 
   // --- STATE GETTERS ---
   
+  // Calculate cumulative paper PnL = unrealized + sum of paper trades history
+  getCumPaperPnl(state) {
+    const unrealized = state.paperTrade?.unrealizedPnl || 0;
+    const realized = (state.paperTrades || []).reduce((sum, t) => sum + (t.realizedPnl || 0), 0);
+    return unrealized + realized;
+  }
+  
+  // Calculate cumulative live PnL = sum of realized PnL from live trades only
+  getCumLivePnl(liveState) {
+    return (liveState.trades || []).reduce((sum, t) => {
+      // Only count EXIT trades (they have realizedPnl)
+      if (t.action === 'EXIT' && t.realizedPnl !== null) {
+        return sum + t.realizedPnl;
+      }
+      return sum;
+    }, 0);
+  }
+  
   getFullState() {
     return {
       long: {
@@ -158,7 +176,11 @@ class TradingEngine {
         peakPnlHistory: this.longState.peakPnlHistory,
         currentPeakPnl: this.longState.currentPeakPnl,
         liveState: this.serializeLiveState(this.longState.liveState),
-        signals: this.longState.signals
+        signals: this.longState.signals,
+        cumPaperPnl: this.getCumPaperPnl(this.longState),
+        cumLivePnl: this.getCumLivePnl(this.longState.liveState),
+        paperTradeCount: (this.longState.paperTrades || []).length + (this.longState.paperTrade ? 1 : 0),
+        liveTradeCount: (this.longState.liveState.trades || []).filter(t => t.action === 'EXIT').length + (this.longState.liveState.openTrade ? 1 : 0)
       },
       short: {
         fsmState: this.shortState.fsmState,
@@ -168,7 +190,11 @@ class TradingEngine {
         peakPnlHistory: this.shortState.peakPnlHistory,
         currentPeakPnl: this.shortState.currentPeakPnl,
         liveState: this.serializeLiveState(this.shortState.liveState),
-        signals: this.shortState.signals
+        signals: this.shortState.signals,
+        cumPaperPnl: this.getCumPaperPnl(this.shortState),
+        cumLivePnl: this.getCumLivePnl(this.shortState.liveState),
+        paperTradeCount: (this.shortState.paperTrades || []).length + (this.shortState.paperTrade ? 1 : 0),
+        liveTradeCount: (this.shortState.liveState.trades || []).filter(t => t.action === 'EXIT').length + (this.shortState.liveState.openTrade ? 1 : 0)
       },
       ltp: Object.fromEntries(this.ltpBySymbol),
       fsm: Object.fromEntries(this.fsmBySymbol)
