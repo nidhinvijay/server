@@ -621,7 +621,8 @@ class TradingEngine {
   }
 
   formatIstTime(date) {
-    return date.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
+    // Use en-GB to avoid 24:xx issue with en-IN
+    return date.toLocaleString('en-GB', { timeZone: 'Asia/Kolkata', hour12: false }).replace(',', '');
   }
 }
 
