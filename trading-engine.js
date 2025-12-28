@@ -389,13 +389,13 @@ class TradingEngine {
       this.shortState.signals.unshift(signalRecord);
       this.shortState.signals = this.shortState.signals.slice(0, 50);
       
-      // Set threshold from stoppx (or LTP if no stoppx)
-      this.shortState.threshold = stoppx || ltp;
+      // For SELL: Always use current LTP as threshold (ignore stoppx)
+      this.shortState.threshold = ltp;
       this.shortState.lastSignalAtMs = now;
       
       if (this.shortState.fsmState === 'NOPOSITION' || this.shortState.fsmState === 'NOPOSITION_BLOCKED') {
         this.shortState.fsmState = 'NOPOSITION_SIGNAL';
-        console.log(`[TradingEngine] 📶 SHORT Signal received: threshold=${this.shortState.threshold}, waiting for LTP < threshold`);
+        console.log(`[TradingEngine] 📶 SHORT Signal received: threshold=${this.shortState.threshold} (LTP), waiting for LTP < threshold`);
       } else if (this.shortState.fsmState === 'SELLPOSITION') {
         // Already in position, update threshold (trailing stop)
         console.log(`[TradingEngine] 📶 SHORT already in position, updating threshold to ${this.shortState.threshold}`);
