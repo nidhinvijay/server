@@ -31,9 +31,12 @@ class TradingEngine {
     
     // LONG position state
     this.longState = {
-      fsmState: 'NOPOSITION',      // NOPOSITION, NOPOSITION_SIGNAL, BUYPOSITION, NOPOSITION_BLOCKED
-      threshold: null,              // stoppx from signal
-      paperTrade: null,             // Current open paper trade
+      fsmState: 'NOPOSITION',
+      threshold: null,
+      paperTrade: null,
+      paperTrades: [],
+      peakPnlHistory: [],      // History of peak PnL values
+      currentPeakPnl: null,    // Current session peak
       liveState: this.createLiveState(),
       signals: [],
       lastSignalAtMs: null,
@@ -42,9 +45,12 @@ class TradingEngine {
     
     // SHORT position state
     this.shortState = {
-      fsmState: 'NOPOSITION',      // NOPOSITION, NOPOSITION_SIGNAL, SELLPOSITION, NOPOSITION_BLOCKED
-      threshold: null,              // stoppx from signal
-      paperTrade: null,             // Current open paper trade
+      fsmState: 'NOPOSITION',
+      threshold: null,
+      paperTrade: null,
+      paperTrades: [],
+      peakPnlHistory: [],      // History of peak PnL values
+      currentPeakPnl: null,    // Current session peak
       liveState: this.createLiveState(),
       signals: [],
       lastSignalAtMs: null,
@@ -54,13 +60,71 @@ class TradingEngine {
     // Shared
     this.ltpBySymbol = new Map();
     this.fsmBySymbol = new Map();
+    this.lastResetDate = null;
     
-    // Broadcast state every 1 second
+    // Broadcast state every 1 second + check for daily reset
     setInterval(() => {
+      this.checkDailyReset();
       this.broadcastState();
     }, 1000);
     
     console.log('[TradingEngine] Initialized with FSM Breakout Logic');
+  }
+
+  // Check and perform daily reset at 5:30 AM IST
+  checkDailyReset() {
+    const now = new Date();
+    const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
+    const istOffset = 5.5 * 60 * 60 * 1000;
+    const istDate = new Date(utc + istOffset);
+    
+    const hours = istDate.getHours();
+    const minutes = istDate.getMinutes();
+    const dateStr = istDate.toISOString().split('T')[0];
+    
+    if (hours === 5 && minutes >= 30 && minutes < 31 && this.lastResetDate !== dateStr) {
+      this.performDailyReset();
+      this.lastResetDate = dateStr;
+    }
+  }
+
+  performDailyReset() {
+    console.log('[TradingEngine] 🔄 Daily reset at 5:30 AM IST');
+    
+    // Close any open positions first
+    if (this.longState.paperTrade) {
+      const ltp = this.ltpBySymbol.get(this.longState.paperTrade.symbol) || this.longState.paperTrade.currentPrice;
+      this.closePaperTrade('LONG', this.longState, ltp, 'Daily Reset');
+    }
+    if (this.shortState.paperTrade) {
+      const ltp = this.ltpBySymbol.get(this.shortState.paperTrade.symbol) || this.shortState.paperTrade.currentPrice;
+      this.closePaperTrade('SHORT', this.shortState, ltp, 'Daily Reset');
+    }
+    
+    // Reset LONG
+    this.longState.fsmState = 'NOPOSITION';
+    this.longState.threshold = null;
+    this.longState.paperTrades = [];
+    this.longState.peakPnlHistory = [];
+    this.longState.currentPeakPnl = null;
+    this.longState.signals = [];
+    this.longState.liveState = this.createLiveState();
+    this.longState.lastSignalAtMs = null;
+    this.longState.lastBlockedAtMs = null;
+    
+    // Reset SHORT
+    this.shortState.fsmState = 'NOPOSITION';
+    this.shortState.threshold = null;
+    this.shortState.paperTrades = [];
+    this.shortState.peakPnlHistory = [];
+    this.shortState.currentPeakPnl = null;
+    this.shortState.signals = [];
+    this.shortState.liveState = this.createLiveState();
+    this.shortState.lastSignalAtMs = null;
+    this.shortState.lastBlockedAtMs = null;
+    
+    this.fsmBySymbol.clear();
+    console.log('[TradingEngine] ✅ Daily reset complete');
   }
 
   createLiveState() {
@@ -82,15 +146,21 @@ class TradingEngine {
         fsmState: this.longState.fsmState,
         threshold: this.longState.threshold,
         paperTrade: this.longState.paperTrade,
+        paperTrades: this.longState.paperTrades,
+        peakPnlHistory: this.longState.peakPnlHistory,
+        currentPeakPnl: this.longState.currentPeakPnl,
         liveState: this.serializeLiveState(this.longState.liveState),
-        signals: this.longState.signals.slice(0, 20)
+        signals: this.longState.signals
       },
       short: {
         fsmState: this.shortState.fsmState,
         threshold: this.shortState.threshold,
         paperTrade: this.shortState.paperTrade,
+        paperTrades: this.shortState.paperTrades,
+        peakPnlHistory: this.shortState.peakPnlHistory,
+        currentPeakPnl: this.shortState.currentPeakPnl,
         liveState: this.serializeLiveState(this.shortState.liveState),
-        signals: this.shortState.signals.slice(0, 20)
+        signals: this.shortState.signals
       },
       ltp: Object.fromEntries(this.ltpBySymbol),
       fsm: Object.fromEntries(this.fsmBySymbol)
@@ -106,7 +176,7 @@ class TradingEngine {
       isLiveActive: totalPnl > OPEN_THRESHOLD,
       blockedAtMs: state.blockedAtMs,
       openTrade: state.openTrade,
-      trades: state.trades.slice(0, 20)
+      trades: state.trades
     };
   }
 
@@ -135,6 +205,12 @@ class TradingEngine {
       state.paperTrade.currentPrice = ltp;
       // LONG: profit when price goes UP
       state.paperTrade.unrealizedPnl = (ltp - state.paperTrade.entryPrice) * state.paperTrade.quantity;
+      
+      // Track peak PnL - update if new high (positive only)
+      const currentPnl = state.paperTrade.unrealizedPnl;
+      if (currentPnl > 0 && (state.currentPeakPnl === null || currentPnl > state.currentPeakPnl)) {
+        state.currentPeakPnl = currentPnl;
+      }
       
       const totalPnl = state.liveState.cumulativePnl + state.paperTrade.unrealizedPnl;
       this.checkLiveTrade('LONG', state, totalPnl, ltp, symbol);
@@ -199,6 +275,12 @@ class TradingEngine {
       state.paperTrade.currentPrice = ltp;
       // SHORT: profit when price goes DOWN
       state.paperTrade.unrealizedPnl = (state.paperTrade.entryPrice - ltp) * state.paperTrade.quantity;
+      
+      // Track peak PnL - update if new high (positive only)
+      const currentPnl = state.paperTrade.unrealizedPnl;
+      if (currentPnl > 0 && (state.currentPeakPnl === null || currentPnl > state.currentPeakPnl)) {
+        state.currentPeakPnl = currentPnl;
+      }
       
       const totalPnl = state.liveState.cumulativePnl + state.paperTrade.unrealizedPnl;
       this.checkLiveTrade('SHORT', state, totalPnl, ltp, symbol);
@@ -362,6 +444,25 @@ class TradingEngine {
     
     console.log(`[TradingEngine] 📉 ${direction} Paper EXIT (${reason}): ${trade.symbol} @ ${exitPrice}, PnL: $${realizedPnl.toFixed(2)}`);
     
+    // Save to paper trade history
+    state.paperTrades.unshift({
+      ...trade,
+      exitPrice,
+      exitTimeIst: this.formatIstTime(new Date()),
+      realizedPnl,
+      reason,
+      closedAt: Date.now()
+    });
+    
+    // Save final peak to history (if there was one)
+    if (state.currentPeakPnl !== null && state.currentPeakPnl > 0) {
+      state.peakPnlHistory.unshift({
+        pnl: state.currentPeakPnl,
+        timeIst: this.formatIstTime(new Date()),
+        timestamp: Date.now()
+      });
+    }
+    
     // Close live trade if open
     if (state.liveState.openTrade) {
       this.closeLiveTrade(direction, state, exitPrice, reason);
@@ -369,6 +470,7 @@ class TradingEngine {
     
     state.paperTrade = null;
     state.liveState.pendingPaperTrade = null;
+    state.currentPeakPnl = null;  // Reset peak for next trade
   }
 
   // --- LIVE TRADE MANAGEMENT ---
