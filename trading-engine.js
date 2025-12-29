@@ -150,6 +150,46 @@ class TradingEngine {
     this.fsmBySymbol.clear();
     this.lastResetTimestamp = Date.now();  // Update reset checkpoint for cumulative calculations
     console.log('[TradingEngine] ✅ Daily reset complete - History preserved, cumulative PnL reset');
+    
+    // Auto-generate signals for new day (after short delay to ensure LTP is available)
+    setTimeout(() => {
+      this.generateAutoSignals();
+    }, 5000);  // 5 second delay to ensure LTP data is fresh
+  }
+  
+  // Auto-generate BUY and SELL signals at 5:30 AM
+  generateAutoSignals() {
+    const ltp = this.ltpBySymbol.get('BTCUSDT');
+    if (!ltp) {
+      console.log('[TradingEngine] ⚠️ Auto-signals skipped - no LTP available');
+      return;
+    }
+    
+    const now = Date.now();
+    
+    // Generate BUY signal for LONG (threshold = LTP - 50)
+    const buySignal = {
+      symbol: 'BTCUSDT',
+      stoppx: ltp - 50,
+      intent: 'ENTRY',
+      side: 'BUY',
+      raw: { auto: true, timestamp: now, ltp }
+    };
+    console.log('[TradingEngine] 🤖 Auto BUY signal:', buySignal);
+    this.processWebhookSignal(buySignal);
+    
+    // Generate SELL signal for SHORT (threshold = LTP)
+    const sellSignal = {
+      symbol: 'BTCUSDT',
+      stoppx: ltp,
+      intent: 'ENTRY',
+      side: 'SELL',
+      raw: { auto: true, timestamp: now, ltp }
+    };
+    console.log('[TradingEngine] 🤖 Auto SELL signal:', sellSignal);
+    this.processWebhookSignal(sellSignal);
+    
+    console.log('[TradingEngine] ✅ Auto signals generated - LONG threshold:', ltp - 50, ', SHORT threshold:', ltp);
   }
 
   createLiveState() {
