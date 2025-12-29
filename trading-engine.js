@@ -29,6 +29,9 @@ const STATE_FILE = path.join(__dirname, 'trading-state.json');
 const OPEN_THRESHOLD = 0;   // Activate live when profit > $0
 const CLOSE_THRESHOLD = 0;  // Protective close when profit <= $0
 
+// Position sizing
+const POSITION_SIZE = 1000;  // $1000 position size
+
 class TradingEngine {
   constructor(io) {
     this.io = io;
@@ -478,7 +481,7 @@ class TradingEngine {
       direction,
       entryPrice,
       currentPrice: entryPrice,
-      quantity: 2,  // Default quantity
+      quantity: POSITION_SIZE / entryPrice,  // Calculate quantity from $1000 position size
       unrealizedPnl: 0,
       enteredAt: Date.now()
     };
@@ -659,22 +662,52 @@ class TradingEngine {
         deltaSymbol = 'BTCUSD';
       }
       
-      const message = kind === 'ENTRY'
-        ? `Accepted Entry + priorRisePct= 0.00 | stopPx=${refPrice} | sym=${deltaSymbol}`
-        : `Accepted Exit + priorRisePct= 0.00 | stopPx=${refPrice} | sym=${deltaSymbol}`;
-      
-      console.log(`[TradingEngine] 🚀 Sending ${direction} ${kind} to Firebase: ${deltaSymbol} @ ${refPrice}`);
-      
-      const response = await fetch(LIVE_WEBHOOK_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message })
-      });
-      
-      const result = await response.text();
-      console.log(`[TradingEngine] ✅ Firebase response:`, result);
+      // Route based on direction
+      if (direction === 'SHORT') {
+        // SHORT trades → Direct Delta API call
+        await this.sendShortToDelta(kind, deltaSymbol, refPrice);
+      } else {
+        // LONG trades → Firebase cloud function (Bharath's)
+        await this.sendLongToFirebase(kind, deltaSymbol, refPrice);
+      }
     } catch (err) {
       console.error(`[TradingEngine] ❌ Failed to send live signal:`, err.message);
+    }
+  }
+
+  async sendLongToFirebase(kind, symbol, refPrice) {
+    const message = kind === 'ENTRY'
+      ? `Accepted Entry + priorRisePct= 0.00 | stopPx=${refPrice} | sym=${symbol}`
+      : `Accepted Exit + priorRisePct= 0.00 | stopPx=${refPrice} | sym=${symbol}`;
+    
+    console.log(`[TradingEngine] 🚀 Sending LONG ${kind} to Firebase: ${symbol} @ ${refPrice}`);
+    
+    const response = await fetch(LIVE_WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message })
+    });
+    
+    const result = await response.text();
+    console.log(`[TradingEngine] ✅ Firebase response:`, result);
+  }
+
+  async sendShortToDelta(kind, symbol, refPrice) {
+    const deltaApi = require('./delta-api');
+    const sizeUsd = POSITION_SIZE;  // Use same position size as paper trading
+    
+    console.log(`[TradingEngine] 🚀 Sending SHORT ${kind} to Delta API: ${symbol} @ ${refPrice}, size: $${sizeUsd}`);
+    
+    try {
+      if (kind === 'ENTRY') {
+        const result = await deltaApi.openShortPosition(symbol, sizeUsd);
+        console.log(`[TradingEngine] ✅ Delta SHORT ENTRY placed:`, result);
+      } else {
+        const result = await deltaApi.closeShortPosition(symbol, sizeUsd);
+        console.log(`[TradingEngine] ✅ Delta SHORT EXIT placed:`, result);
+      }
+    } catch (err) {
+      console.error(`[TradingEngine] ❌ Delta API error:`, err.message);
     }
   }
 
