@@ -61,6 +61,7 @@ class TradingEngine {
     this.ltpBySymbol = new Map();
     this.fsmBySymbol = new Map();
     this.lastResetDate = null;
+    this.lastResetTimestamp = Date.now();  // Only sum trades after this for daily cumulative
     
     // Broadcast state every 1 second + check for daily reset
     setInterval(() => {
@@ -132,7 +133,8 @@ class TradingEngine {
     this.shortState.lastBlockedAtMs = null;
     
     this.fsmBySymbol.clear();
-    console.log('[TradingEngine] ✅ Daily reset complete - History preserved');
+    this.lastResetTimestamp = Date.now();  // Update reset checkpoint for cumulative calculations
+    console.log('[TradingEngine] ✅ Daily reset complete - History preserved, cumulative PnL reset');
   }
 
   createLiveState() {
@@ -148,18 +150,24 @@ class TradingEngine {
 
   // --- STATE GETTERS ---
   
-  // Calculate cumulative paper PnL = unrealized + sum of paper trades history
+  // Calculate cumulative paper PnL = unrealized + sum of paper trades history (today only)
   getCumPaperPnl(state) {
     const unrealized = state.paperTrade?.unrealizedPnl || 0;
-    const realized = (state.paperTrades || []).reduce((sum, t) => sum + (t.realizedPnl || 0), 0);
+    // Only sum trades closed after last reset
+    const realized = (state.paperTrades || []).reduce((sum, t) => {
+      if (t.closedAt && t.closedAt > this.lastResetTimestamp) {
+        return sum + (t.realizedPnl || 0);
+      }
+      return sum;
+    }, 0);
     return unrealized + realized;
   }
   
-  // Calculate cumulative live PnL = sum of realized PnL from live trades only
+  // Calculate cumulative live PnL = sum of realized PnL from live trades only (today only)
   getCumLivePnl(liveState) {
     return (liveState.trades || []).reduce((sum, t) => {
-      // Only count EXIT trades (they have realizedPnl)
-      if (t.action === 'EXIT' && t.realizedPnl !== null) {
+      // Only count EXIT trades after last reset
+      if (t.action === 'EXIT' && t.realizedPnl !== null && t.closedAt && t.closedAt > this.lastResetTimestamp) {
         return sum + t.realizedPnl;
       }
       return sum;
@@ -595,6 +603,7 @@ class TradingEngine {
     const exitRow = {
       id: `${openTrade.id}-exit`,
       timeIst: this.formatIstTime(new Date()),
+      closedAt: Date.now(),  // Timestamp for filtering by reset
       symbol: openTrade.symbol,
       action: 'EXIT',
       entryPrice: openTrade.entryPrice,
