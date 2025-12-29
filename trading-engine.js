@@ -19,7 +19,11 @@
  *   - Wait 1 minute before allowing re-entry
  */
 
+const fs = require('fs');
+const path = require('path');
+
 const LIVE_WEBHOOK_URL = 'https://asia-south1-delta-6c4a8.cloudfunctions.net/tradingviewWebhook?token=tradingview';
+const STATE_FILE = path.join(__dirname, 'trading-state.json');
 
 // Thresholds for paper-to-live
 const OPEN_THRESHOLD = 0;   // Activate live when profit > $0
@@ -63,11 +67,19 @@ class TradingEngine {
     this.lastResetDate = null;
     this.lastResetTimestamp = Date.now();  // Only sum trades after this for daily cumulative
     
+    // Load persisted state if available
+    this.loadState();
+    
     // Broadcast state every 1 second + check for daily reset
     setInterval(() => {
       this.checkDailyReset();
       this.broadcastState();
     }, 1000);
+    
+    // Auto-save state every 60 seconds
+    setInterval(() => {
+      this.saveState();
+    }, 60000);
     
     console.log('[TradingEngine] Initialized with FSM Breakout Logic');
   }
@@ -513,6 +525,9 @@ class TradingEngine {
     state.paperTrade = null;
     state.liveState.pendingPaperTrade = null;
     state.currentPeakPnl = null;  // Reset peak for next trade
+    
+    // Save state immediately after trade closes
+    this.saveState();
   }
 
   // --- LIVE TRADE MANAGEMENT ---
@@ -658,6 +673,87 @@ class TradingEngine {
   formatIstTime(date) {
     // Use en-GB to avoid 24:xx issue with en-IN
     return date.toLocaleString('en-GB', { timeZone: 'Asia/Kolkata', hour12: false }).replace(',', '');
+  }
+
+  // --- STATE PERSISTENCE ---
+  
+  saveState() {
+    try {
+      const state = {
+        savedAt: Date.now(),
+        lastResetDate: this.lastResetDate,
+        lastResetTimestamp: this.lastResetTimestamp,
+        long: {
+          fsmState: this.longState.fsmState,
+          threshold: this.longState.threshold,
+          paperTrades: this.longState.paperTrades,
+          peakPnlHistory: this.longState.peakPnlHistory,
+          currentPeakPnl: this.longState.currentPeakPnl,
+          signals: this.longState.signals,
+          liveStateTrades: this.longState.liveState.trades,
+          liveStateCumulativePnl: this.longState.liveState.cumulativePnl
+        },
+        short: {
+          fsmState: this.shortState.fsmState,
+          threshold: this.shortState.threshold,
+          paperTrades: this.shortState.paperTrades,
+          peakPnlHistory: this.shortState.peakPnlHistory,
+          currentPeakPnl: this.shortState.currentPeakPnl,
+          signals: this.shortState.signals,
+          liveStateTrades: this.shortState.liveState.trades,
+          liveStateCumulativePnl: this.shortState.liveState.cumulativePnl
+        }
+      };
+      fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+      console.log('[TradingEngine] 💾 State saved to', STATE_FILE);
+    } catch (err) {
+      console.error('[TradingEngine] ❌ Failed to save state:', err.message);
+    }
+  }
+
+  loadState() {
+    try {
+      if (!fs.existsSync(STATE_FILE)) {
+        console.log('[TradingEngine] No saved state found, starting fresh');
+        return;
+      }
+      
+      const data = fs.readFileSync(STATE_FILE, 'utf8');
+      const state = JSON.parse(data);
+      
+      // Restore shared state
+      this.lastResetDate = state.lastResetDate;
+      this.lastResetTimestamp = state.lastResetTimestamp || Date.now();
+      
+      // Restore LONG state
+      if (state.long) {
+        this.longState.fsmState = state.long.fsmState || 'NOPOSITION';
+        this.longState.threshold = state.long.threshold;
+        this.longState.paperTrades = state.long.paperTrades || [];
+        this.longState.peakPnlHistory = state.long.peakPnlHistory || [];
+        this.longState.currentPeakPnl = state.long.currentPeakPnl;
+        this.longState.signals = state.long.signals || [];
+        this.longState.liveState.trades = state.long.liveStateTrades || [];
+        this.longState.liveState.cumulativePnl = state.long.liveStateCumulativePnl || 0;
+      }
+      
+      // Restore SHORT state
+      if (state.short) {
+        this.shortState.fsmState = state.short.fsmState || 'NOPOSITION';
+        this.shortState.threshold = state.short.threshold;
+        this.shortState.paperTrades = state.short.paperTrades || [];
+        this.shortState.peakPnlHistory = state.short.peakPnlHistory || [];
+        this.shortState.currentPeakPnl = state.short.currentPeakPnl;
+        this.shortState.signals = state.short.signals || [];
+        this.shortState.liveState.trades = state.short.liveStateTrades || [];
+        this.shortState.liveState.cumulativePnl = state.short.liveStateCumulativePnl || 0;
+      }
+      
+      const savedAgo = Math.round((Date.now() - state.savedAt) / 1000);
+      console.log(`[TradingEngine] ✅ State restored from ${STATE_FILE} (saved ${savedAgo}s ago)`);
+    } catch (err) {
+      console.error('[TradingEngine] ❌ Failed to load state:', err.message);
+    }
   }
 }
 
