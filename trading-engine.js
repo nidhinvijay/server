@@ -434,9 +434,10 @@ class TradingEngine {
     const ltp = this.ltpBySymbol.get(normalizedSymbol);
     const now = Date.now();
     
-    // Determine direction from side or intent
-    const isBuy = side === 'BUY' || intent === 'ENTRY';
-    const isSell = side === 'SELL' || intent === 'EXIT';
+    // Determine direction from side (priority) or intent (fallback)
+    // Side takes precedence: BUY side = LONG, SELL side = SHORT
+    const isBuy = side === 'BUY' || (side !== 'SELL' && intent === 'ENTRY');
+    const isSell = side === 'SELL' || (side !== 'BUY' && intent === 'EXIT');
     
     const signalRecord = {
       timeIst: this.formatIstTime(new Date()),
