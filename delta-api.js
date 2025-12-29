@@ -9,7 +9,7 @@ const https = require('https');
 // Configuration - will be loaded from environment
 const DELTA_API_KEY = process.env.DELTA_SHORT_API_KEY;
 const DELTA_API_SECRET = process.env.DELTA_SHORT_API_SECRET;
-const DELTA_BASE_URL = 'https://testnet-api.delta.exchange';  // Demo/Testnet
+const DELTA_BASE_URL = 'https://api.testnet.delta.exchange';  // TESTNET (demo) - NOT api.india.delta.exchange
 
 /**
  * Generate signature for Delta API authentication
