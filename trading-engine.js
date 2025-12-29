@@ -242,6 +242,13 @@ class TradingEngine {
   
   updateLtp(symbol, price) {
     this.ltpBySymbol.set(symbol, price);
+    
+    // Only process FSM transitions for BTC symbols
+    const upperSymbol = symbol.toUpperCase();
+    if (!upperSymbol.includes('BTC')) {
+      return; // Ignore non-BTC ticks for trading logic
+    }
+    
     const now = Date.now();
     
     // Process LONG FSM transitions
