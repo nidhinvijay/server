@@ -9,7 +9,7 @@ const https = require('https');
 // Configuration - will be loaded from environment
 const DELTA_API_KEY = process.env.DELTA_SHORT_API_KEY;
 const DELTA_API_SECRET = process.env.DELTA_SHORT_API_SECRET;
-const DELTA_BASE_URL = 'https://testnet-api.delta.exchange';  // TESTNET (demo)
+const DELTA_BASE_URL = 'https://cdn-ind.testnet.deltaex.org';  // Bharath's working testnet URL
 
 /**
  * Generate signature for Delta API authentication
@@ -79,9 +79,21 @@ function deltaRequest(method, endpoint, body = null) {
 }
 
 /**
+ * Known product IDs (from Bharath's config)
+ */
+const KNOWN_PRODUCTS = {
+  BTCUSD: 84
+};
+
+/**
  * Get product ID for a symbol (e.g., BTCUSD)
  */
 async function getProductId(symbol) {
+  // First check hardcoded IDs
+  if (KNOWN_PRODUCTS[symbol]) {
+    return KNOWN_PRODUCTS[symbol];
+  }
+  
   try {
     const response = await deltaRequest('GET', '/v2/products');
     const products = response.result || response;
