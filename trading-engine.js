@@ -30,7 +30,7 @@ const OPEN_THRESHOLD = 0;   // Activate live when profit > $0
 const CLOSE_THRESHOLD = 0;  // Protective close when profit <= $0
 
 // Position sizing
-const POSITION_SIZE = 1000;  // $1000 position size
+const POSITION_SIZE = 10;  // $10 position size (demo has only $100)
 
 class TradingEngine {
   constructor(io) {
