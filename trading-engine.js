@@ -398,6 +398,13 @@ class TradingEngine {
     if (!symbol) return;
     
     const normalizedSymbol = symbol.toUpperCase();
+    
+    // Only process BTC signals - ignore all others (options, stocks, etc.)
+    if (!normalizedSymbol.includes('BTC')) {
+      console.log(`[TradingEngine] ⏭️ Ignoring non-BTC signal: ${normalizedSymbol}`);
+      return;
+    }
+    
     const ltp = this.ltpBySymbol.get(normalizedSymbol);
     const now = Date.now();
     
