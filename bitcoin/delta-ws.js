@@ -12,9 +12,7 @@ function startDeltaWs({
   let reconnectTimer = null;
   let lastPayload = null;
   let reconnectDelayMs = 1000;
-  let lastLogTimeMs = 0;
   let messageCount = 0;
-  const LOG_INTERVAL_MS = 60000; // Log every 60 seconds
 
   function connect() {
     socket = new WebSocket(url);
@@ -67,13 +65,6 @@ function startDeltaWs({
           lastPayload = payload;
           io.emit(eventName, payload);
           messageCount++;
-          
-          // Only log first message or periodically
-          const now = Date.now();
-          if (messageCount === 1 || now - lastLogTimeMs >= LOG_INTERVAL_MS) {
-            logger.log(`Delta LTP: ${msg.symbol} = ${price} (msgs: ${messageCount})`);
-            lastLogTimeMs = now;
-          }
           return;
         }
 
@@ -93,13 +84,6 @@ function startDeltaWs({
           lastPayload = payload;
           io.emit(eventName, payload);
           messageCount++;
-          
-          // Only log periodically to reduce noise
-          const now = Date.now();
-          if (now - lastLogTimeMs >= LOG_INTERVAL_MS) {
-            logger.log(`Delta LTP: ${msg.symbol} = ${price} (msgs: ${messageCount})`);
-            lastLogTimeMs = now;
-          }
         }
       } catch (err) {
         logger.error("Delta WS parse error:", err.message);
