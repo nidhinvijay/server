@@ -264,6 +264,14 @@ class TradingEngine {
   processLongTickTransition(symbol, ltp, now) {
     const state = this.longState;
     
+    // Safety check: Reset FSM if trade is missing (can happen after restart)
+    if ((state.fsmState === 'BUYPOSITION') && !state.paperTrade) {
+      console.log('[TradingEngine] ⚠️ LONG state mismatch detected, resetting to NOPOSITION');
+      state.fsmState = 'NOPOSITION';
+      state.threshold = null;
+      state.currentPeakPnl = null;  // Reset peak since no trade
+    }
+    
     // Update existing position PnL
     if (state.paperTrade && state.paperTrade.symbol === symbol) {
       state.paperTrade.currentPrice = ltp;
@@ -333,6 +341,14 @@ class TradingEngine {
 
   processShortTickTransition(symbol, ltp, now) {
     const state = this.shortState;
+    
+    // Safety check: Reset FSM if trade is missing (can happen after restart)
+    if ((state.fsmState === 'SELLPOSITION') && !state.paperTrade) {
+      console.log('[TradingEngine] ⚠️ SHORT state mismatch detected, resetting to NOPOSITION');
+      state.fsmState = 'NOPOSITION';
+      state.threshold = null;
+      state.currentPeakPnl = null;  // Reset peak since no trade
+    }
     
     // Update existing position PnL
     if (state.paperTrade && state.paperTrade.symbol === symbol) {

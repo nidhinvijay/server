@@ -224,6 +224,50 @@ app.post("/webhook", (req, res) => {
   res.json({ ok: true, received: signal });
 });
 
+// Manual signal endpoint - send signals without TradingView
+app.post("/manual-signal", (req, res) => {
+  const { side, symbol = 'BTCUSDT', stoppx } = req.body;
+  
+  if (!side || !['BUY', 'SELL'].includes(side.toUpperCase())) {
+    return res.status(400).json({ error: 'Invalid side. Use BUY or SELL' });
+  }
+  
+  // Get current LTP
+  let currentLtp = null;
+  if (tradingEngine) {
+    currentLtp = tradingEngine.ltpBySymbol.get(symbol.toUpperCase()) || 
+                 tradingEngine.ltpBySymbol.get('BTCUSDT');
+  }
+  
+  // Calculate stoppx: BUY = LTP - 50, SELL = LTP (uses LTP directly)
+  let stopPrice = stoppx;
+  if (!stopPrice && currentLtp) {
+    if (side.toUpperCase() === 'BUY') {
+      stopPrice = currentLtp - 50;  // Entry threshold below current price
+    } else {
+      stopPrice = currentLtp;  // SELL uses current LTP
+    }
+  }
+  
+  const signal = {
+    symbol: symbol.toUpperCase(),
+    stoppx: stopPrice ? Number(stopPrice) : null,
+    intent: 'ENTRY',
+    side: side.toUpperCase(),
+    raw: { manual: true, timestamp: Date.now(), ltp: currentLtp }
+  };
+  
+  console.log("[Manual Signal]", signal);
+  
+  // Broadcast to connected clients
+  if (io) io.emit("webhook", signal);
+  
+  // Process in trading engine
+  if (tradingEngine) tradingEngine.processWebhookSignal(signal);
+  
+  res.json({ ok: true, signal });
+});
+
 const { execSync } = require('child_process');
 
 // Helper to update .env
