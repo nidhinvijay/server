@@ -705,7 +705,7 @@ class TradingEngine {
         }
       };
       fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
-      console.log('[TradingEngine] 💾 State saved to', STATE_FILE);
+      // Silent save - only log errors
     } catch (err) {
       console.error('[TradingEngine] ❌ Failed to save state:', err.message);
     }
