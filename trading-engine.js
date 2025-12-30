@@ -30,7 +30,8 @@ const OPEN_THRESHOLD = 0;   // Activate live when profit > $0
 const CLOSE_THRESHOLD = 0;  // Protective close when profit <= $0
 
 // Position sizing
-const POSITION_SIZE = 1;  // 1 contract (0.001 BTC ≈ $87)
+const POSITION_SIZE = 1000;  // $1000 simulated position for paper trading
+const LIVE_ORDER_SIZE = 1;   // 1 contract for Delta API (demo account has $100)
 
 class TradingEngine {
   constructor(io) {
@@ -538,7 +539,7 @@ class TradingEngine {
       direction,
       entryPrice,
       currentPrice: entryPrice,
-      quantity: POSITION_SIZE * 0.001,  // 1 contract = 0.001 BTC
+      quantity: POSITION_SIZE / entryPrice,  // Calculate BTC quantity from $1000 position
       unrealizedPnl: 0,
       enteredAt: Date.now()
     };
@@ -751,7 +752,7 @@ class TradingEngine {
 
   async sendShortToDelta(kind, symbol, refPrice) {
     const deltaApi = require('./delta-api');
-    const sizeUsd = POSITION_SIZE;  // Use same position size as paper trading
+    const sizeUsd = LIVE_ORDER_SIZE;  // Use small size for demo account ($100 balance)
     
     console.log(`[TradingEngine] 🚀 Sending SHORT ${kind} to Delta API: ${symbol} @ ${refPrice}, size: $${sizeUsd}`);
     
