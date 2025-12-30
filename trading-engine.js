@@ -538,7 +538,7 @@ class TradingEngine {
       direction,
       entryPrice,
       currentPrice: entryPrice,
-      quantity: POSITION_SIZE / entryPrice,  // Calculate quantity from $1000 position size
+      quantity: POSITION_SIZE * 0.001,  // 1 contract = 0.001 BTC
       unrealizedPnl: 0,
       enteredAt: Date.now()
     };
