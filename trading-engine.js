@@ -151,11 +151,7 @@ class TradingEngine {
     this.fsmBySymbol.clear();
     this.lastResetTimestamp = Date.now();  // Update reset checkpoint for cumulative calculations
     console.log('[TradingEngine] ✅ Daily reset complete - History preserved, cumulative PnL reset');
-    
-    // Auto-generate signals for new day (after short delay to ensure LTP is available)
-    setTimeout(() => {
-      this.generateAutoSignals();
-    }, 5000);  // 5 second delay to ensure LTP data is fresh
+    // Auto signals removed - will wait for TradingView signals
   }
   
   // Auto-generate BUY and SELL signals at 5:30 AM
