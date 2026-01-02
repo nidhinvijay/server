@@ -317,8 +317,9 @@ class TradingEngine {
       
       // Track peak PnL - update if new high (positive only)
       const currentPnl = state.paperTrade.unrealizedPnl;
-      if (currentPnl > 0 && (state.currentPeakPnl === null || currentPnl > state.currentPeakPnl)) {
-        state.currentPeakPnl = currentPnl;
+      const peakPnl = state.currentPeakPnl?.pnl ?? 0;
+      if (currentPnl > 0 && currentPnl > peakPnl) {
+        state.currentPeakPnl = { pnl: currentPnl, timeIst: this.formatIstTime(new Date()) };
       }
       
       const totalPnl = state.liveState.cumulativePnl + state.paperTrade.unrealizedPnl;
@@ -395,8 +396,9 @@ class TradingEngine {
       
       // Track peak PnL - update if new high (positive only)
       const currentPnl = state.paperTrade.unrealizedPnl;
-      if (currentPnl > 0 && (state.currentPeakPnl === null || currentPnl > state.currentPeakPnl)) {
-        state.currentPeakPnl = currentPnl;
+      const peakPnl = state.currentPeakPnl?.pnl ?? 0;
+      if (currentPnl > 0 && currentPnl > peakPnl) {
+        state.currentPeakPnl = { pnl: currentPnl, timeIst: this.formatIstTime(new Date()) };
       }
       
       const totalPnl = state.liveState.cumulativePnl + state.paperTrade.unrealizedPnl;
@@ -580,10 +582,10 @@ class TradingEngine {
     });
     
     // Save final peak to history (if there was one)
-    if (state.currentPeakPnl !== null && state.currentPeakPnl > 0) {
+    if (state.currentPeakPnl !== null && state.currentPeakPnl.pnl > 0) {
       state.peakPnlHistory.unshift({
-        pnl: state.currentPeakPnl,
-        timeIst: this.formatIstTime(new Date()),
+        pnl: state.currentPeakPnl.pnl,
+        timeIst: state.currentPeakPnl.timeIst,  // Time when peak was REACHED
         timestamp: Date.now()
       });
     }
