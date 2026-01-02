@@ -70,6 +70,7 @@ class TradingEngine {
     this.fsmBySymbol = new Map();
     this.lastResetDate = null;
     this.lastResetTimestamp = Date.now();  // Only sum trades after this for daily cumulative
+    this.dailyHistory = [];  // Array of daily snapshots (saved at each 5:30 AM reset)
     
     // Load persisted state if available
     this.loadState();
@@ -118,40 +119,79 @@ class TradingEngine {
       this.closePaperTrade('SHORT', this.shortState, ltp, 'Daily Reset');
     }
     
-    // Reset LONG - keep history, reset active state and PnL
+    // Save today's data to daily history before clearing
+    const dailySnapshot = {
+      date: this.lastResetDate || new Date().toISOString().split('T')[0],
+      resetTimestamp: this.lastResetTimestamp,
+      endTimestamp: Date.now(),
+      long: {
+        paperTrades: [...this.longState.paperTrades],
+        peakPnlHistory: [...this.longState.peakPnlHistory],
+        liveTrades: [...this.longState.liveState.trades],
+        signals: [...this.longState.signals],
+        cumPaperPnl: this.getCumPaperPnl(this.longState),
+        cumLivePnl: this.getCumLivePnl(this.longState.liveState)
+      },
+      short: {
+        paperTrades: [...this.shortState.paperTrades],
+        peakPnlHistory: [...this.shortState.peakPnlHistory],
+        liveTrades: [...this.shortState.liveState.trades],
+        signals: [...this.shortState.signals],
+        cumPaperPnl: this.getCumPaperPnl(this.shortState),
+        cumLivePnl: this.getCumLivePnl(this.shortState.liveState)
+      }
+    };
+    
+    // Only save if there was any activity
+    const hasActivity = dailySnapshot.long.paperTrades.length > 0 || 
+                       dailySnapshot.short.paperTrades.length > 0 ||
+                       dailySnapshot.long.liveTrades.length > 0 || 
+                       dailySnapshot.short.liveTrades.length > 0;
+    if (hasActivity) {
+      this.dailyHistory.unshift(dailySnapshot);  // Add to front (newest first)
+      console.log(`[TradingEngine] 📝 Saved daily snapshot for ${dailySnapshot.date}`);
+    }
+    
+    // Clear history arrays for new day (they're now saved in dailyHistory)
+    this.longState.paperTrades = [];
+    this.longState.peakPnlHistory = [];
+    this.longState.signals = [];
+    this.longState.liveState.trades = [];
+    
+    this.shortState.paperTrades = [];
+    this.shortState.peakPnlHistory = [];
+    this.shortState.signals = [];
+    this.shortState.liveState.trades = [];
+    // Reset LONG FSM state (history arrays already cleared above)
     this.longState.fsmState = 'NOPOSITION';
     this.longState.threshold = null;
     this.longState.currentPeakPnl = null;
-    this.longState.signals = [];  // Reset signals for new day
     this.longState.liveState.state = 'NO_POSITION';
-    this.longState.liveState.cumulativePnl = 0;  // Reset PnL
+    this.longState.liveState.cumulativePnl = 0;
     this.longState.liveState.unrealizedPnl = 0;
     this.longState.liveState.blockedAtMs = null;
     this.longState.liveState.openTrade = null;
     this.longState.liveState.pendingPaperTrade = null;
-    // Keep: paperTrades, peakPnlHistory, liveState.trades
     this.longState.lastSignalAtMs = null;
     this.longState.lastBlockedAtMs = null;
     
-    // Reset SHORT - keep history, reset active state and PnL
+    // Reset SHORT FSM state (history arrays already cleared above)
     this.shortState.fsmState = 'NOPOSITION';
     this.shortState.threshold = null;
     this.shortState.currentPeakPnl = null;
-    this.shortState.signals = [];  // Reset signals for new day
     this.shortState.liveState.state = 'NO_POSITION';
-    this.shortState.liveState.cumulativePnl = 0;  // Reset PnL
+    this.shortState.liveState.cumulativePnl = 0;
     this.shortState.liveState.unrealizedPnl = 0;
     this.shortState.liveState.blockedAtMs = null;
     this.shortState.liveState.openTrade = null;
     this.shortState.liveState.pendingPaperTrade = null;
-    // Keep: paperTrades, peakPnlHistory, liveState.trades
     this.shortState.lastSignalAtMs = null;
     this.shortState.lastBlockedAtMs = null;
     
     this.fsmBySymbol.clear();
-    this.lastResetTimestamp = Date.now();  // Update reset checkpoint for cumulative calculations
-    console.log('[TradingEngine] ✅ Daily reset complete - History preserved, cumulative PnL reset');
-    // Auto signals removed - will wait for TradingView signals
+    this.lastResetTimestamp = Date.now();
+    console.log('[TradingEngine] ✅ Daily reset complete - Data saved to history, new day started');
+    this.saveState();  // Immediately save after reset
   }
   
   // Auto-generate BUY and SELL signals at 5:30 AM
@@ -259,6 +299,10 @@ class TradingEngine {
       ltp: Object.fromEntries(this.ltpBySymbol),
       fsm: Object.fromEntries(this.fsmBySymbol)
     };
+  }
+
+  getDailyHistory() {
+    return this.dailyHistory;
   }
 
   serializeLiveState(state) {
@@ -811,7 +855,8 @@ class TradingEngine {
           liveStateCumulativePnl: this.shortState.liveState.cumulativePnl,
           liveStateOpenTrade: this.shortState.liveState.openTrade,
           liveStatePendingPaperTrade: this.shortState.liveState.pendingPaperTrade
-        }
+        },
+        dailyHistory: this.dailyHistory
       };
       fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
       // Silent save - only log errors
@@ -869,6 +914,9 @@ class TradingEngine {
           this.shortState.liveState.state = 'POSITION';
         }
       }
+      
+      // Restore daily history
+      this.dailyHistory = state.dailyHistory || [];
       
       const savedAgo = Math.round((Date.now() - state.savedAt) / 1000);
       console.log(`[TradingEngine] ✅ State restored from ${STATE_FILE} (saved ${savedAgo}s ago)`);

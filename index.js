@@ -460,6 +460,14 @@ app.post("/live-signal", async (req, res) => {
   }
 });
 
+// GET /api/history - Get daily trading history
+app.get("/api/history", (req, res) => {
+  if (!tradingEngine) {
+    return res.status(503).json({ error: 'Trading engine not initialized' });
+  }
+  res.json(tradingEngine.getDailyHistory());
+});
+
 const server = http.createServer(app);
 io = new Server(server, {
   cors: { origin: "*" },
