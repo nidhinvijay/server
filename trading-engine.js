@@ -789,22 +789,28 @@ class TradingEngine {
         long: {
           fsmState: this.longState.fsmState,
           threshold: this.longState.threshold,
+          paperTrade: this.longState.paperTrade,
           paperTrades: this.longState.paperTrades,
           peakPnlHistory: this.longState.peakPnlHistory,
           currentPeakPnl: this.longState.currentPeakPnl,
           signals: this.longState.signals,
           liveStateTrades: this.longState.liveState.trades,
-          liveStateCumulativePnl: this.longState.liveState.cumulativePnl
+          liveStateCumulativePnl: this.longState.liveState.cumulativePnl,
+          liveStateOpenTrade: this.longState.liveState.openTrade,
+          liveStatePendingPaperTrade: this.longState.liveState.pendingPaperTrade
         },
         short: {
           fsmState: this.shortState.fsmState,
           threshold: this.shortState.threshold,
+          paperTrade: this.shortState.paperTrade,
           paperTrades: this.shortState.paperTrades,
           peakPnlHistory: this.shortState.peakPnlHistory,
           currentPeakPnl: this.shortState.currentPeakPnl,
           signals: this.shortState.signals,
           liveStateTrades: this.shortState.liveState.trades,
-          liveStateCumulativePnl: this.shortState.liveState.cumulativePnl
+          liveStateCumulativePnl: this.shortState.liveState.cumulativePnl,
+          liveStateOpenTrade: this.shortState.liveState.openTrade,
+          liveStatePendingPaperTrade: this.shortState.liveState.pendingPaperTrade
         }
       };
       fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
@@ -832,24 +838,36 @@ class TradingEngine {
       if (state.long) {
         this.longState.fsmState = state.long.fsmState || 'NOPOSITION';
         this.longState.threshold = state.long.threshold;
+        this.longState.paperTrade = state.long.paperTrade || null;
         this.longState.paperTrades = state.long.paperTrades || [];
         this.longState.peakPnlHistory = state.long.peakPnlHistory || [];
         this.longState.currentPeakPnl = state.long.currentPeakPnl;
         this.longState.signals = state.long.signals || [];
         this.longState.liveState.trades = state.long.liveStateTrades || [];
         this.longState.liveState.cumulativePnl = state.long.liveStateCumulativePnl || 0;
+        this.longState.liveState.openTrade = state.long.liveStateOpenTrade || null;
+        this.longState.liveState.pendingPaperTrade = state.long.liveStatePendingPaperTrade || null;
+        if (this.longState.liveState.openTrade) {
+          this.longState.liveState.state = 'POSITION';
+        }
       }
       
       // Restore SHORT state
       if (state.short) {
         this.shortState.fsmState = state.short.fsmState || 'NOPOSITION';
         this.shortState.threshold = state.short.threshold;
+        this.shortState.paperTrade = state.short.paperTrade || null;
         this.shortState.paperTrades = state.short.paperTrades || [];
         this.shortState.peakPnlHistory = state.short.peakPnlHistory || [];
         this.shortState.currentPeakPnl = state.short.currentPeakPnl;
         this.shortState.signals = state.short.signals || [];
         this.shortState.liveState.trades = state.short.liveStateTrades || [];
         this.shortState.liveState.cumulativePnl = state.short.liveStateCumulativePnl || 0;
+        this.shortState.liveState.openTrade = state.short.liveStateOpenTrade || null;
+        this.shortState.liveState.pendingPaperTrade = state.short.liveStatePendingPaperTrade || null;
+        if (this.shortState.liveState.openTrade) {
+          this.shortState.liveState.state = 'POSITION';
+        }
       }
       
       const savedAgo = Math.round((Date.now() - state.savedAt) / 1000);
